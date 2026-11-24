@@ -31,31 +31,37 @@ import xml.dom.minidom
 import gitlint.git as git
 
 
-def _FindFoldersContaining(root, wanted):
-  """Recursively finds directories that have a file with the given name.
+_IGNORED_FOLDERS_CACHE = set()
+
+
+def _HasParentContaining(file_path, root=None):
+  """Checks if any parent directory of file_path (up to root) has IGNORE_CHECKSTYLE.
 
   Args:
-    root: Root folder to start the search from.
-    wanted: The filename that we are looking for.
+    file_path: Path to the file being checked.
+    root: Optional root folder to stop the upward search at.
 
   Returns:
-    List of folders that has a file with the given name
+    True if any parent folder (up to root) contains IGNORE_CHECKSTYLE.
   """
-
-  if not root:
-    return []
-  if os.path.islink(root):
-    return []
-  result = []
-  for file_name in os.listdir(root):
-    file_path = os.path.join(root, file_name)
-    if os.path.isdir(file_path):
-      sub_result = _FindFoldersContaining(file_path, wanted)
-      result.extend(sub_result)
-    else:
-      if file_name == wanted:
-        result.append(root)
-  return result
+  if not file_path:
+    return False
+  abs_file_path = os.path.abspath(file_path)
+  if any(abs_file_path.startswith(folder) for folder in _IGNORED_FOLDERS_CACHE):
+    return True
+  current = os.path.dirname(abs_file_path)
+  root = os.path.abspath(root) if root else None
+  while True:
+    if os.path.isfile(os.path.join(current, 'IGNORE_CHECKSTYLE')):
+      _IGNORED_FOLDERS_CACHE.add(current + os.sep)
+      return True
+    if current == root:
+      break
+    parent = os.path.dirname(current)
+    if parent == current:
+      break
+    current = parent
+  return False
 
 MAIN_DIRECTORY = os.path.normpath(os.path.dirname(__file__))
 CHECKSTYLE_JAR = os.path.join(MAIN_DIRECTORY, 'checkstyle.jar')
@@ -66,8 +72,6 @@ SKIPPED_RULES_FOR_TEST_FILES = ['com.puppycrawl.tools.checkstyle.checks.javadoc.
                                 'com.puppycrawl.tools.checkstyle.checks.javadoc.JavadocMethodCheck']
 SUBPATH_FOR_TEST_FILES = ['/tests/', '/test/', '/androidTest/', '/perftests/', '/gts-tests/',
                           '/hostsidetests/', '/jvmTest/', '/robotests/', '/robolectric/']
-SUBPATH_FOR_TEST_DATA_FILES = _FindFoldersContaining(git.repository_root(),
-                                                     'IGNORE_CHECKSTYLE')
 ERROR_UNCOMMITTED = 'You need to commit all modified files before running Checkstyle\n'
 ERROR_UNTRACKED = 'You have untracked java files that are not being checked:\n'
 
@@ -218,6 +222,7 @@ def _ParseAndFilterOutput(stdout,
                           tmp_file_map=None):
   result_errors = []
   result_warnings = []
+  repo_root = git.repository_root()
   root = xml.dom.minidom.parseString(stdout)
   for file_element in root.getElementsByTagName('file'):
     file_name = file_element.attributes['name'].value
@@ -230,8 +235,7 @@ def _ParseAndFilterOutput(stdout,
                                           sha)
     test_class = any(substring in file_name for substring
                      in SUBPATH_FOR_TEST_FILES)
-    test_data_class = any(substring in file_name for substring
-                          in SUBPATH_FOR_TEST_DATA_FILES)
+    test_data_class = _HasParentContaining(file_name, repo_root)
     file_name = os.path.relpath(file_name)
     errors = file_element.getElementsByTagName('error')
     for error in errors:
@@ -288,10 +292,11 @@ def _ShouldSkip(commit_check, modified_lines, line, rule, test_class=False,
 
 def _GetModifiedFiles(commit, explicit_commit=False, out=sys.stdout):
   root = git.repository_root()
-  pending_files = git.modified_files(root, True)
-  if pending_files and not explicit_commit:
-    out.write(ERROR_UNCOMMITTED)
-    sys.exit(1)
+  if not explicit_commit:
+    pending_files = git.modified_files(root, True)
+    if pending_files:
+      out.write(ERROR_UNCOMMITTED)
+      sys.exit(1)
 
   modified_files = git.modified_files(root, True, commit)
   modified_files = {f: modified_files[f] for f

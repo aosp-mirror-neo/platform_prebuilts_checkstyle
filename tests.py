@@ -23,6 +23,9 @@ try:
 except ImportError:
   # python3 use io instead of StringIO
   from io import StringIO
+import os
+import shutil
+import tempfile
 import unittest
 import checkstyle
 
@@ -166,6 +169,29 @@ class TestCheckstyle(unittest.TestCase):
     self.assertEqual(files, output)
     output = checkstyle._FilterFiles(files, ['FunkyTown'])
     self.assertEqual({}, output)
+
+  def test_HasParentContaining(self):
+    tmp_dir = tempfile.mkdtemp()
+    try:
+      ignored_dir = os.path.join(tmp_dir, 'sub', 'ignored', 'nested')
+      normal_dir = os.path.join(tmp_dir, 'sub', 'normal')
+      os.makedirs(ignored_dir)
+      os.makedirs(normal_dir)
+      ignore_file = os.path.join(tmp_dir, 'sub', 'ignored', 'IGNORE_CHECKSTYLE')
+      open(ignore_file, 'w').close()
+
+      self.assertTrue(checkstyle._HasParentContaining(
+          os.path.join(ignored_dir, 'Foo.java'), tmp_dir))
+      self.assertFalse(checkstyle._HasParentContaining(
+          os.path.join(normal_dir, 'Bar.java'), tmp_dir))
+
+      # Verify subsequent lookups hit the prefix cache.
+      os.remove(ignore_file)
+      self.assertTrue(checkstyle._HasParentContaining(
+          os.path.join(ignored_dir, 'deeper', 'Baz.java'), tmp_dir))
+    finally:
+      checkstyle._IGNORED_FOLDERS_CACHE.clear()
+      shutil.rmtree(tmp_dir)
 
 if __name__ == '__main__':
   unittest.main()
